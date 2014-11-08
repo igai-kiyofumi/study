@@ -3,36 +3,97 @@ package expression
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	. "yuh/sequence"
 )
+
+// トークン定義
+func ScanToken(str string) (Anything, error) {
+	switch str {
+	case "+":
+		return &PlusOp{}, nil
+	case "-":
+		return &MinusOp{}, nil
+	case "*":
+		return &MultOp{}, nil
+	case "/":
+		return &DivOp{}, nil
+	case "(":
+		return &OpenParen{}, nil
+	case ")":
+		return &CloseParen{}, nil
+	case "sin":
+		return &UnaryFunc {
+			name: "sin",
+			f: WrapUnaryFunc(math.Sin),
+		}, nil
+	case "cos":
+		return &UnaryFunc {
+			name: "sin",
+			f: WrapUnaryFunc(math.Cos),
+		}, nil
+	case "tan":
+		return &UnaryFunc {
+			name: "sin",
+			f: WrapUnaryFunc(math.Tan),
+		}, nil
+	case "pi":
+		return &NumberExpr{Val: math.Pi}, nil
+	default:
+		val, err := strconv.ParseFloat(str, 64)
+		return &NumberExpr{Val: val}, err
+	}
+	return nil, nil
+}
+
+func WrapUnaryFunc(f func(float64)float64) func(Expression)(Expression, error) {
+	return func (arg Expression) (ret Expression, err error) {
+		ret, err = arg.Eval()
+		if err != nil {
+			return
+		}
+		if t, ok :=ret.(*NumberExpr); ok {
+			return &NumberExpr{ Val: f(t.Val) }, nil
+		}
+		return
+	}
+}
 
 // 式
 type Expression interface {
 	Eval() (Expression, error)
 }
 
+type Function interface {
+	Expression
+	ArgumentNum() int
+}
+
+
+type UnaryFunction interface {
+	Function
+	GetValue() (Expression, error)
+	setValue() (Expression, error)
+}
+
 // 二引数
 type BinaryFunction interface {
-	Expression
+	Function
 	GetLhs() (Expression, error)
 	setLhs(e Expression) error
 	GetRhs() (Expression, error)
 	setRhs(e Expression) error
 }
 
-type UnaryFunction interface {
-	Expression
-	GetValue() (Expression, error)
-}
-
 //S ::= <式>
-//<式>   ::= <項>(('+'|'-')<式>)?
-//<項>   ::= <因子>(('*'|'/')<項>)?
-//<因子> ::= '('<式>')'|<数>
+//<式>   ::= <項>(('+'|'-')<項>)*
+//<項>   ::= <因子>(('*'|'/')<因子>)*
+//<因子> ::= '('<式>')'|<関数>'('<式>(,<式>)*')'|<数>
 //<数>   ::= [1-9][0-9]*
+//<関数> ::= [a-zA-Z][a-zA-Z0-9]*
 
-func Analyze(x []Expression) (ex Expression, rest []Expression, err error) {
+func Parse(x []Expression) (ex Expression, rest []Expression, err error) {
 	return expr(x)
 }
 
@@ -123,6 +184,42 @@ func factor(arg []Expression) (ex Expression, rest []Expression, err error) {
 		}
 		err = fmt.Errorf("factor: Inconsistent parentheses\n%s", e.Error())
 		return // 括弧が閉じていない
+	} else if f, ok := arg[0].(Function); ok {
+		if _, ok := arg[1].(*OpenParen); !ok {
+			if s,ok := f.(fmt.Stringer); ok { 
+				err = fmt.Errorf("factor: missing '(' after <" + s.String() + ">")
+			} else {
+				err = fmt.Errorf("factor: missing '('")
+			}
+			return // 括弧(がない
+		}
+		x,r,e := expr(arg[2:]) // <式>
+		if e != nil {
+			err = fmt.Errorf("factor: unmatch <func>'('<expr>(,<expr>)*')'\n%s", e.Error())
+			return // 内部の<式>が不整合
+		}
+		for i:=1; i<f.ArgumentNum(); i++ {
+			err = fmt.Errorf("factor: not implemented (n-ary functions)\n%s", e.Error())
+			return // 内部の<式>が不整合
+		}
+		if _, ok := r[0].(*CloseParen); !ok {
+			if s,ok := f.(fmt.Stringer); ok { 
+				err = fmt.Errorf("factor: missing ')' after <" + s.String() + ">")
+			} else {
+				err = fmt.Errorf("factor: missing ')'")
+			}
+			return // 括弧)がない
+		}
+		ex = f
+		rest = r[1:]
+		switch f.ArgumentNum() {
+		case 1:
+			u, _ := f.(*UnaryFunc)
+			u.setValue(x)
+		default:
+			err = fmt.Errorf("factor: not implemented (n-ary functions)\n%s", e.Error())
+		}
+		return
 	} else {
 		x, r, e := number(arg)
 		if e != nil {
@@ -149,34 +246,9 @@ func number(arg []Expression) (ex Expression, rest []Expression, err error) {
 	return
 }
 
-// Map用
-func scanToken(str string) (Anything, error) {
-	switch str {
-	case "+":
-		return &PlusOp{}, nil
-	case "-":
-		return &MinusOp{}, nil
-	case "*":
-		return &MultOp{}, nil
-	case "/":
-		return &DivOp{}, nil
-	case "(":
-		return &OpenParen{}, nil
-	case ")":
-		return &CloseParen{}, nil
-	default:
-		val, err := strconv.ParseFloat(str, 64)
-		return &NumberExpr{Val: val}, err
-	}
-	return nil, nil
-}
-
-// RuneSrc  Readerを(runeの)シーケンスとしてみなし、
-// Map      各要素を変換し、
-// RuneSink Writerに流し込む
 
 // トークン分割を行うシーケンス
-func TokenizeSrc(sep string, symbol []string, input string) (e Enumerable) {
+func TokenizeSrc(sep string, operators []string, input string) (e Enumerable) {
 	ret := Enumerable{
 		Out:     make(chan Anything),
 		Done:    make(chan error),
@@ -198,7 +270,7 @@ func TokenizeSrc(sep string, symbol []string, input string) (e Enumerable) {
 				st = cur
 			} else { // 何らかのトークン
 				if s := func() string {
-					for _, s := range symbol {
+					for _, s := range operators {
 						if focus == s {
 							return s
 						}
@@ -225,19 +297,22 @@ func TokenizeSrc(sep string, symbol []string, input string) (e Enumerable) {
 	return ret
 }
 
-func ParseExprToken(lhs Anything) (ret Anything, rerr error) {
-	if t, ok := lhs.(string); ok {
-		if x, err := scanToken(t); err != nil {
-			rerr = err
-			return
+func TokenParser(f func (str string) (Anything, error)) func (lhs Anything) (ret Anything, rerr error) {
+	return func (lhs Anything) (ret Anything, rerr error) {
+		if t, ok := lhs.(string); ok {
+			if x, err := f(t); err != nil {
+				rerr = err
+				return
+			} else {
+				ret = x
+				return
+			}
 		} else {
-			ret = x
-			return
+			panic(errors.New("value is NOT [string]"))
 		}
-	} else {
-		panic(errors.New("value is NOT [string]"))
 	}
 }
+
 
 // 数
 type NumberExpr struct {
@@ -247,6 +322,10 @@ type NumberExpr struct {
 type BinaryExpression struct {
 	lhs Expression
 	rhs Expression
+}
+
+type UnaryExpression struct {
+	expr Expression
 }
 
 type PlusOp struct {
@@ -267,6 +346,13 @@ type CloseParen struct{}
 
 type Parenthesis struct {
 	expr Expression
+}
+
+
+type UnaryFunc struct {
+	UnaryExpression
+	f func (Expression) (Expression, error)
+	name string
 }
 
 // implements for fmt.Stringer
@@ -411,6 +497,46 @@ func (f *BinaryExpression) setRhs(e Expression) error {
 func (f *BinaryExpression) Eval() (Expression, error) {
 	panic("not implemented")
 }
+func (f *BinaryExpression) ArgumentNum() int {
+	return 2
+}
+
+
+
+func (f *UnaryExpression) GetValue() (Expression, error) {
+	return f.expr, nil
+}
+func (f *UnaryExpression) setValue(e Expression) error {
+	f.expr = e
+	return nil
+}
+func (f *UnaryExpression) Eval() (Expression, error) {
+	panic("not implemented")
+}
+func (f *UnaryExpression) ArgumentNum() int {
+	return 1
+}
+
+func (f *UnaryFunc) String() string {
+	if f.expr == nil {
+		return f.name
+	} else if e, ok := f.expr.(fmt.Stringer); ok {
+		return "(" + f.name + " " + e.String() + ")"
+	} else {
+		return "(" + f.name + " *)"
+	}
+}
+
+func (f *UnaryFunc) Eval() (ret Expression, err error) {
+	ret, err = f.expr.Eval()
+	if err != nil {
+		return
+	}
+	
+	ret, err = f.f(ret)
+	return
+}
+
 
 // Parentheses
 

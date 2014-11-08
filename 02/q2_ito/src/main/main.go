@@ -11,28 +11,27 @@ func main() {
 	input := []struct{ title, input string }{
 		{"2.1", "(1 + 3) * 10"},
 		{"2.2", "1 ERROR 3"},
-		{"2.3", "sin(30)"},
+		{"2.3", "sin(pi/6)"}, // 度数法めんどくさいので弧度法対・分数表記は無理。
 		{"ex1", "(5-3-1)"},
 		{"ex2", "(5-6/2/3-1*2)"},
 	}
-
-	// 特別扱いの演算子トークン
-	symbol := []string{"+", "-", "*", "/", "(", ")"}
-
 	for _, v := range input {
 		fmt.Println(v.title)
-		err := do(symbol, v.input)
+		err := do(v.input)
 		if err != nil {
 			fmt.Printf("ERROR cause: \n" + err.Error())
 		}
 	}
 }
 
-func do(symbols []string, input string) (err error) {
+func do(input string) (err error) {
 	// トークン解析
-	fmt.Printf("Tokenize [%s]\n", input)
-	res, err := TokenizeSrc(" ", symbols, input).
-		Map(ParseExprToken).
+	fmt.Printf("Parse [%s]\n", input)
+	res, err := TokenizeSrc(
+		" ", 
+		[]string{"+", "-", "*", "/", "(", ")", ","}, 
+		input).
+		Map(TokenParser(ScanToken)).
 		SliceSink(10)
 
 	if err != nil {
@@ -40,8 +39,8 @@ func do(symbols []string, input string) (err error) {
 	}
 
 	// 式木
-	fmt.Printf("Analyze [%v]\n", res)
-	ex, _, err := Analyze(*convertSliceToExpression(&res))
+	fmt.Printf("Construct [%v]\n", res)
+	ex, _, err := Parse(*convertSliceToExpression(&res))
 	if err != nil {
 		return
 	}
